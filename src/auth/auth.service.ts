@@ -1,4 +1,10 @@
-import { ConflictException, Injectable } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { User } from "@prisma/client";
@@ -6,6 +12,7 @@ import { PrismaClientKnownRequestError } from "@prisma/client/runtime";
 import * as argon from "argon2";
 import { PrismaService } from "src/prisma/prisma.service";
 import { UserDto } from "./dto/user.dto";
+import { UserLoginDto } from "./dto/userLogin.dto";
 
 @Injectable()
 export class AuthService {
@@ -15,7 +22,50 @@ export class AuthService {
     private config: ConfigService
   ) {}
 
-  async addUser(user: UserDto): Promise<{ user: User; accessToken: string }> {
+  async login(payload: UserLoginDto): Promise<{
+    user: User;
+    refreshToken: string;
+    accessToken: string;
+  }> {
+    const user = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          {
+            email: payload.email,
+          },
+          {
+            login: payload.login,
+          },
+        ],
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException("User not found");
+    }
+
+    const isValid = await argon.verify(user.password, payload.password);
+
+    if (!isValid) {
+      throw new UnauthorizedException("Invalid password");
+    }
+
+    const refreshToken = await this.generateRefreshToken(user);
+    const accessToken = await this.generateAccessToken(refreshToken);
+
+    user.password = null; //Don't send the password hash back to user
+    user.currentRefreshToken = null; //Don't send the refresh token back as well
+
+    return {
+      user,
+      refreshToken,
+      accessToken,
+    };
+  }
+
+  async addUser(
+    user: UserDto
+  ): Promise<{ user: User; refreshToken: string; accessToken: string }> {
     try {
       const hash = await argon.hash(user.password);
 
@@ -24,10 +74,14 @@ export class AuthService {
       });
 
       userObj.password = null; //Don't send the password hash back to user
+      userObj.currentRefreshToken = null; //Don't send the refresh token back as well
+
+      const refreshToken = await this.generateRefreshToken(userObj);
 
       return {
         user: userObj,
-        accessToken: await this.generateAccessTokenForUser(userObj),
+        refreshToken: refreshToken,
+        accessToken: await this.generateAccessToken(refreshToken),
       };
     } catch (err) {
       console.error(err);
@@ -39,15 +93,84 @@ export class AuthService {
     }
   }
 
-  generateAccessTokenForUser(user: User): Promise<string> {
-    const data = {
+  async generateAccessToken(refreshToken: string): Promise<string> {
+    if (!refreshToken) {
+      throw new BadRequestException("No refresh token provided");
+    }
+
+    const tokenOwner = await this.prisma.user.findFirst({
+      where: { currentRefreshToken: refreshToken.toString() },
+    });
+    if (!tokenOwner) {
+      throw new NotFoundException("Refresh token not found");
+    }
+
+    let refreshTokenPayload;
+    try {
+      refreshTokenPayload = await this.jwt.verifyAsync(refreshToken, {
+        secret: this.config.get("JWT_REFRESH_SECRET"),
+      });
+    } catch (err) {
+      console.error(err);
+      throw new UnauthorizedException("Invalid refresh token");
+    }
+
+    if (!refreshTokenPayload) {
+      throw new UnauthorizedException("Invalid refresh token");
+    } else {
+      const payload = {
+        id: refreshTokenPayload.id,
+        login: refreshTokenPayload.login,
+      };
+      return await this.jwt.signAsync(payload, {
+        expiresIn: "15m",
+        secret: this.config.get("JWT_ACCESS_SECRET"),
+      });
+    }
+  }
+
+  async generateRefreshToken(user: User): Promise<string> {
+    const payload = {
       id: user.id,
       login: user.login,
     };
 
-    return this.jwt.signAsync(data, {
-      expiresIn: "15m",
-      secret: this.config.get("JWT_SECRET"),
+    const token: string = await this.jwt.signAsync(payload, {
+      expiresIn: "3d",
+      secret: this.config.get("JWT_REFRESH_SECRET"),
+    });
+
+    await this.prisma.user.update({
+      where: {
+        id: user.id,
+      },
+      data: {
+        currentRefreshToken: token,
+      },
+    });
+
+    return token;
+  }
+
+  async logout(refreshToken: string): Promise<void> {
+    if (!refreshToken) {
+      throw new BadRequestException("No refresh token provided");
+    }
+
+    const tokenOwner = await this.prisma.user.findFirst({
+      where: { currentRefreshToken: refreshToken.toString() },
+    });
+    if (!tokenOwner) {
+      throw new NotFoundException("Refresh token not found");
+    }
+
+    await this.prisma.user.update({
+      where: {
+        id: tokenOwner.id,
+      },
+      data: {
+        currentRefreshToken: null,
+      },
     });
   }
 }
