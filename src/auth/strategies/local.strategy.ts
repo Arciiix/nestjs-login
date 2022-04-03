@@ -15,7 +15,7 @@ export class LocalStrategy extends PassportStrategy(Strategy, "local") {
           return token;
         }
         const cookies = req.cookies;
-        if (cookies && cookies.refreshToken) {
+        if (cookies && cookies.accessToken) {
           return cookies.accessToken;
         }
         return null;
