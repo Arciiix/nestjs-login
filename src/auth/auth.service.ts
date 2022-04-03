@@ -98,13 +98,6 @@ export class AuthService {
       throw new BadRequestException("No refresh token provided");
     }
 
-    const tokenOwner = await this.prisma.user.findFirst({
-      where: { currentRefreshToken: refreshToken.toString() },
-    });
-    if (!tokenOwner) {
-      throw new NotFoundException("Refresh token not found");
-    }
-
     let refreshTokenPayload;
     try {
       refreshTokenPayload = await this.jwt.verifyAsync(refreshToken, {
@@ -118,6 +111,25 @@ export class AuthService {
     if (!refreshTokenPayload) {
       throw new UnauthorizedException("Invalid refresh token");
     } else {
+      const user = await this.prisma.user.findFirst({
+        where: {
+          id: refreshTokenPayload.id,
+        },
+      });
+
+      if (!user) {
+        throw new NotFoundException("User not found");
+      }
+
+      const isValid = await argon.verify(
+        user.currentRefreshToken,
+        refreshToken
+      );
+
+      if (!isValid) {
+        throw new UnauthorizedException("Invalid refresh token");
+      }
+
       const payload: JwtPayload = {
         id: refreshTokenPayload.id,
         login: refreshTokenPayload.login,
@@ -145,7 +157,7 @@ export class AuthService {
         id: user.id,
       },
       data: {
-        currentRefreshToken: token,
+        currentRefreshToken: await argon.hash(token),
       },
     });
 
