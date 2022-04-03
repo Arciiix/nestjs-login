@@ -1,8 +1,18 @@
-import { Body, Controller, Delete, Get, Param, Post } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  UseGuards,
+  Request,
+} from "@nestjs/common";
 import { User } from "@prisma/client";
 import { AuthService } from "./auth.service";
 import { UserDto } from "./dto/user.dto";
 import { UserLoginDto } from "./dto/userLogin.dto";
+import { LocalAuthGuard } from "./guards/localAuth.guard";
 
 @Controller("auth")
 export class AuthController {
@@ -39,5 +49,11 @@ export class AuthController {
     return {
       accessToken: await this.authService.generateAccessToken(refreshToken),
     };
+  }
+
+  @UseGuards(LocalAuthGuard)
+  @Get("/me")
+  async getMe(@Request() req): Promise<any> {
+    return req.user;
   }
 }

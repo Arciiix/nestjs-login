@@ -118,7 +118,7 @@ export class AuthService {
     if (!refreshTokenPayload) {
       throw new UnauthorizedException("Invalid refresh token");
     } else {
-      const payload = {
+      const payload: JwtPayload = {
         id: refreshTokenPayload.id,
         login: refreshTokenPayload.login,
       };
@@ -130,7 +130,7 @@ export class AuthService {
   }
 
   async generateRefreshToken(user: User): Promise<string> {
-    const payload = {
+    const payload: JwtPayload = {
       id: user.id,
       login: user.login,
     };
@@ -173,4 +173,54 @@ export class AuthService {
       },
     });
   }
+
+  async validateUser(jwtPayload: JwtPayload): Promise<User> {
+    const userObj = await this.prisma.user.findFirst({
+      where: {
+        id: jwtPayload.id,
+      },
+    });
+
+    userObj.password = null; //Don't send the password hash back to user
+    userObj.currentRefreshToken = null; //Don't send the refresh token back as well
+
+    return userObj;
+  }
+
+  async getMe(accessToken: string): Promise<User> {
+    if (!accessToken) {
+      throw new BadRequestException("No access token provided");
+    }
+
+    let accessTokenPayload;
+    try {
+      accessTokenPayload = await this.jwt.verifyAsync(accessToken, {
+        secret: this.config.get("JWT_ACCESS_SECRET"),
+      });
+    } catch (err) {
+      console.error(err);
+      throw new UnauthorizedException("Invalid access token");
+    }
+
+    if (!accessTokenPayload) {
+      throw new UnauthorizedException("Invalid access token");
+    } else {
+      const user = await this.prisma.user.findFirst({
+        where: {
+          id: accessTokenPayload.id,
+        },
+      });
+      if (!user) {
+        throw new NotFoundException("User not found");
+      }
+      return user;
+    }
+  }
 }
+
+interface JwtPayload {
+  id: string;
+  login: string;
+}
+
+export type { JwtPayload };
