@@ -59,17 +59,16 @@ export class AuthController {
     return returnObj;
   }
 
+  @UseGuards(LocalAuthGuard)
   @Delete("/logout")
   async logout(
     @Request() req,
-    @Response({ passthrough: true }) res,
-    @Body("refreshToken") refreshToken: string
+    @Response({ passthrough: true }) res
   ): Promise<{ success: boolean }> {
-    refreshToken = refreshToken ?? req.cookies.refreshToken;
-    if (!refreshToken) {
-      throw new UnauthorizedException("No refresh token provided");
-    }
-    await this.authService.logout(refreshToken);
+    await this.authService.logout(
+      req.user.id,
+      req.body.refreshToken ?? req.cookies.refreshToken
+    );
     res.clearCookie("accessToken");
     res.clearCookie("refreshToken");
 

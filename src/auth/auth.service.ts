@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
@@ -164,16 +165,20 @@ export class AuthService {
     return token;
   }
 
-  async logout(refreshToken: string): Promise<void> {
-    if (!refreshToken) {
-      throw new BadRequestException("No refresh token provided");
+  async logout(userId: string, refreshToken: string): Promise<void> {
+    if (!userId) {
+      throw new InternalServerErrorException("No user id found in request");
     }
 
     const tokenOwner = await this.prisma.user.findFirst({
-      where: { currentRefreshToken: refreshToken.toString() },
+      where: { id: userId },
     });
     if (!tokenOwner) {
-      throw new NotFoundException("Refresh token not found");
+      throw new NotFoundException("User not found");
+    }
+
+    if (!(await argon.verify(tokenOwner.currentRefreshToken, refreshToken))) {
+      throw new BadRequestException("Wrong refresh token");
     }
 
     await this.prisma.user.update({
