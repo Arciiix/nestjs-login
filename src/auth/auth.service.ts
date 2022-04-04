@@ -203,36 +203,6 @@ export class AuthService {
 
     return userObj;
   }
-
-  async getMe(accessToken: string): Promise<User> {
-    if (!accessToken) {
-      throw new BadRequestException("No access token provided");
-    }
-
-    let accessTokenPayload;
-    try {
-      accessTokenPayload = await this.jwt.verifyAsync(accessToken, {
-        secret: this.config.get("JWT_ACCESS_SECRET"),
-      });
-    } catch (err) {
-      console.error(err);
-      throw new UnauthorizedException("Invalid access token");
-    }
-
-    if (!accessTokenPayload) {
-      throw new UnauthorizedException("Invalid access token");
-    } else {
-      const user = await this.prisma.user.findFirst({
-        where: {
-          id: accessTokenPayload.id,
-        },
-      });
-      if (!user) {
-        throw new NotFoundException("User not found");
-      }
-      return user;
-    }
-  }
 }
 
 interface JwtPayload {
