@@ -147,6 +147,24 @@ export class AuthService {
   }
 
   async generateRefreshToken(user: User): Promise<string> {
+    //There's a limit of maxium refresh tokens per user
+    const numberOfTokens = await this.prisma.refreshToken.count({
+      where: {
+        user: {
+          id: user.id,
+        },
+      },
+    });
+
+    if (
+      numberOfTokens >=
+      (parseInt(this.config.get("MAX_REFRESH_TOKENS_PER_USER")) || 20)
+    ) {
+      throw new ConflictException(
+        "User has too many refresh tokens - log out from all the devices first"
+      );
+    }
+
     const payload: JwtPayload = {
       id: user.id,
       login: user.login,
