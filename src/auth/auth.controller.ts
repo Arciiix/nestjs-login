@@ -75,6 +75,21 @@ export class AuthController {
     return { success: true };
   }
 
+  @UseGuards(LocalAuthGuard)
+  @Delete("/logoutFromAllDevices")
+  async logoutFromAllDevices(
+    @Request() req,
+    @Response({ passthrough: true }) res
+  ): Promise<{ success: boolean; amountOfDevices: number }> {
+    const { amountOfDevices } = await this.authService.logoutFromAllDevices(
+      req.user.id
+    );
+    res.clearCookie("accessToken");
+    res.clearCookie("refreshToken");
+
+    return { success: true, amountOfDevices };
+  }
+
   @Get("/generateAccessToken/:refreshToken")
   async generateAccessToken(
     @Response({ passthrough: true }) res,

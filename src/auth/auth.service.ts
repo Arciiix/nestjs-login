@@ -55,7 +55,6 @@ export class AuthService {
     const accessToken = await this.generateAccessToken(refreshToken);
 
     user.password = null; //Don't send the password hash back to user
-    user.currentRefreshToken = null; //Don't send the refresh token back as well
 
     return {
       user,
@@ -75,7 +74,6 @@ export class AuthService {
       });
 
       userObj.password = null; //Don't send the password hash back to user
-      userObj.currentRefreshToken = null; //Don't send the refresh token back as well
 
       const refreshToken = await this.generateRefreshToken(userObj);
 
@@ -116,16 +114,22 @@ export class AuthService {
         where: {
           id: refreshTokenPayload.id,
         },
+        include: {
+          refreshTokens: true,
+        },
       });
 
       if (!user) {
         throw new NotFoundException("User not found");
       }
 
-      const isValid = await argon.verify(
-        user.currentRefreshToken,
-        refreshToken
-      );
+      let isValid = false;
+
+      for await (const token of user.refreshTokens) {
+        if (!isValid) {
+          isValid = await argon.verify(token.hashedToken, refreshToken);
+        }
+      }
 
       if (!isValid) {
         throw new UnauthorizedException("Invalid refresh token");
@@ -153,12 +157,14 @@ export class AuthService {
       secret: this.config.get("JWT_REFRESH_SECRET"),
     });
 
-    await this.prisma.user.update({
-      where: {
-        id: user.id,
-      },
+    await this.prisma.refreshToken.create({
       data: {
-        currentRefreshToken: await argon.hash(token),
+        hashedToken: await argon.hash(token),
+        user: {
+          connect: {
+            id: user.id,
+          },
+        },
       },
     });
 
@@ -170,25 +176,52 @@ export class AuthService {
       throw new InternalServerErrorException("No user id found in request");
     }
 
-    const tokenOwner = await this.prisma.user.findFirst({
-      where: { id: userId },
-    });
-    if (!tokenOwner) {
-      throw new NotFoundException("User not found");
-    }
-
-    if (!(await argon.verify(tokenOwner.currentRefreshToken, refreshToken))) {
-      throw new BadRequestException("Wrong refresh token");
-    }
-
-    await this.prisma.user.update({
+    const tokens = await this.prisma.refreshToken.findMany({
       where: {
-        id: tokenOwner.id,
-      },
-      data: {
-        currentRefreshToken: null,
+        user: {
+          id: userId,
+        },
       },
     });
+
+    if (!tokens) {
+      throw new NotFoundException("No refresh tokens found");
+    }
+
+    let didDelete = false;
+
+    for await (const token of tokens) {
+      if (await argon.verify(token.hashedToken, refreshToken)) {
+        await this.prisma.refreshToken.delete({
+          where: {
+            hashedToken: token.hashedToken,
+          },
+        });
+        didDelete = true;
+      }
+    }
+
+    if (!didDelete) {
+      throw new UnauthorizedException("Invalid refresh token");
+    }
+  }
+
+  async logoutFromAllDevices(
+    userId: string
+  ): Promise<{ amountOfDevices: number }> {
+    if (!userId) {
+      throw new InternalServerErrorException("No user id found in request");
+    }
+
+    const { count } = await this.prisma.refreshToken.deleteMany({
+      where: {
+        user: {
+          id: userId,
+        },
+      },
+    });
+
+    return { amountOfDevices: count };
   }
 
   async validateUser(jwtPayload: JwtPayload): Promise<User> {
@@ -199,7 +232,6 @@ export class AuthService {
     });
 
     userObj.password = null; //Don't send the password hash back to user
-    userObj.currentRefreshToken = null; //Don't send the refresh token back as well
 
     return userObj;
   }
