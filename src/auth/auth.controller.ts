@@ -32,7 +32,7 @@ export class AuthController {
     const returnObj = await this.authService.login(payload);
     res.cookie("accessToken", returnObj.accessToken, {
       httpOnly: true,
-      maxAge: 1000 * 15,
+      maxAge: 1000 * 60 * 15,
     });
     res.cookie("refreshToken", returnObj.refreshToken, {
       httpOnly: true,
@@ -49,7 +49,7 @@ export class AuthController {
     const returnObj = await this.authService.addUser(user);
     res.cookie("accessToken", returnObj.accessToken, {
       httpOnly: true,
-      maxAge: 1000 * 15,
+      maxAge: 1000 * 60 * 15,
     });
     res.cookie("refreshToken", returnObj.refreshToken, {
       httpOnly: true,
@@ -86,7 +86,7 @@ export class AuthController {
     );
     res.cookie("accessToken", accessToken, {
       httpOnly: true,
-      maxAge: 1000 * 15,
+      maxAge: 1000 * 60 * 15,
     });
 
     return {
