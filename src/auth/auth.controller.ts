@@ -146,7 +146,7 @@ export class AuthController {
     return await this.authService.toogle2FA(req.user.id, isEnabled);
   }
 
-  @Get("/2fa/login")
+  @Put("/2fa/login")
   async loginWith2FA(
     @Request() req,
     @Response({ passthrough: true }) res,
