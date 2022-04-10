@@ -17,7 +17,13 @@ import { UserDto } from "./dto/user.dto";
 import { UserLoginDto } from "./dto/userLogin.dto";
 import * as crypto from "crypto";
 import * as QRCode from "qrcode";
-import { IJwtPayload, ITwoFactorAuthInfo, IUserReturnType } from "./auth";
+import {
+  IJwtPayload,
+  ITwoFactorAuthInfo,
+  IUserReturnType,
+  IUserSafe,
+} from "./auth";
+import { Request } from "express";
 
 @Injectable()
 export class AuthService {
@@ -26,6 +32,15 @@ export class AuthService {
     private jwt: JwtService,
     private config: ConfigService
   ) {}
+
+  userToSafeReturnType(user: User): IUserSafe {
+    return {
+      id: user.id,
+      email: user.email,
+      login: user.login,
+      isTwoFaEnabled: user.isTwoFaEnabled,
+    };
+  }
 
   async login(payload: UserLoginDto): Promise<IUserReturnType> {
     const user = await this.prisma.user.findFirst({
@@ -52,16 +67,16 @@ export class AuthService {
     }
 
     const refreshToken = await this.generateRefreshToken(user);
-    const accessToken = await this.generateAccessToken(refreshToken);
+    const accessToken = await this.generateAccessToken(
+      refreshToken,
+      !user.isTwoFaEnabled
+    );
 
     return {
-      user: {
-        id: user.id,
-        email: user.email,
-        login: user.login,
-      },
+      user: this.userToSafeReturnType(user),
       refreshToken,
       accessToken,
+      isAuthenticated: !user.isTwoFaEnabled,
     };
   }
 
@@ -73,14 +88,13 @@ export class AuthService {
         data: { ...user, ...{ password: hash } },
       });
 
-      userObj.password = null; //Don't send the password hash back to user
-
       const refreshToken = await this.generateRefreshToken(userObj);
 
       return {
-        user: userObj,
+        user: this.userToSafeReturnType(userObj),
         refreshToken: refreshToken,
-        accessToken: await this.generateAccessToken(refreshToken),
+        accessToken: await this.generateAccessToken(refreshToken, true),
+        isAuthenticated: true,
       };
     } catch (err) {
       console.error(err);
@@ -92,7 +106,10 @@ export class AuthService {
     }
   }
 
-  async generateAccessToken(refreshToken: string): Promise<string> {
+  async generateAccessToken(
+    refreshToken: string,
+    authenticated: boolean
+  ): Promise<string> {
     if (!refreshToken) {
       throw new BadRequestException("No refresh token provided");
     }
@@ -138,6 +155,7 @@ export class AuthService {
       const payload: IJwtPayload = {
         id: refreshTokenPayload.id,
         login: refreshTokenPayload.login,
+        authenticated: authenticated,
       };
       return await this.jwt.signAsync(payload, {
         expiresIn: "15m",
@@ -146,7 +164,10 @@ export class AuthService {
     }
   }
 
-  async generateRefreshToken(user: User): Promise<string> {
+  async generateRefreshToken(
+    user: User,
+    authenticated?: boolean
+  ): Promise<string> {
     //There's a limit of maxium refresh tokens per user
     const numberOfTokens = await this.prisma.refreshToken.count({
       where: {
@@ -178,6 +199,7 @@ export class AuthService {
     const payload: IJwtPayload = {
       id: user.id,
       login: user.login,
+      authenticated: authenticated ?? !user.isTwoFaEnabled,
     };
 
     const token: string = await this.jwt.signAsync(payload, {
@@ -252,16 +274,18 @@ export class AuthService {
     return { amountOfDevices: count };
   }
 
-  async validateUser(jwtPayload: IJwtPayload): Promise<User> {
+  async validateUser(jwtPayload: IJwtPayload): Promise<IUserSafe> {
     const userObj = await this.prisma.user.findFirst({
       where: {
         id: jwtPayload.id,
       },
     });
 
-    userObj.password = null; //Don't send the password hash back to user
+    if (!userObj) {
+      throw new NotFoundException("User not found");
+    }
 
-    return userObj;
+    return this.userToSafeReturnType(userObj);
   }
 
   async generate2FA(userId: string): Promise<ITwoFactorAuthInfo> {
@@ -298,6 +322,7 @@ export class AuthService {
 
     return {
       isEnabled: true,
+      secret: secret,
       uri,
       recoveryCode,
       qrCodeEncodedString,
@@ -378,5 +403,120 @@ export class AuthService {
 
       return { isEnabled: false };
     }
+  }
+
+  async checkIfRefreshTokenIsAuthenticated(
+    refreshToken: string
+  ): Promise<boolean> {
+    const tokenPayload: any = await this.jwt.decode(refreshToken);
+
+    const tokens = await this.prisma.refreshToken.findMany({
+      where: {
+        userId: tokenPayload.id,
+      },
+    });
+
+    if (!tokens) {
+      throw new NotFoundException("No refresh tokens found");
+    }
+
+    for await (const token of tokens) {
+      if (await argon.verify(token.hashedToken, refreshToken)) {
+        return tokenPayload.authenticated;
+      }
+    }
+  }
+
+  async loginWith2FA(
+    accessToken: string,
+    twoFaCode?: string,
+    recoveryCode?: string
+  ): Promise<IUserReturnType> {
+    if (!accessToken) {
+      throw new UnauthorizedException("No access token found in request");
+    }
+
+    const tokenPayload: IJwtPayload & any = await this.jwt.decode(accessToken);
+    if (tokenPayload.authenticated) {
+      throw new UnauthorizedException("User is already authenticated");
+    }
+
+    const user = await this.prisma.user.findFirst({
+      where: {
+        id: tokenPayload.id,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException("User not found");
+    }
+
+    if (!user.isTwoFaEnabled) {
+      throw new BadRequestException("2FA is not enabled");
+    }
+
+    if (!user.twoFaSecret) {
+      throw new BadRequestException("2FA secret is not set");
+    }
+
+    if (recoveryCode) {
+      if (recoveryCode !== user.twoFaRecoveryCode) {
+        throw new UnauthorizedException("Invalid recovery code");
+      }
+    } else {
+      const isValid = authenticator.check(
+        twoFaCode.toString(),
+        user.twoFaSecret
+      );
+
+      if (!isValid) {
+        throw new UnauthorizedException("2FA code is not valid");
+      }
+    }
+
+    const generatedRefreshToken = await this.generateRefreshToken(user, true);
+    const generatedAccessToken = await this.generateAccessToken(
+      generatedRefreshToken,
+      true
+    );
+
+    return {
+      accessToken: generatedAccessToken,
+      refreshToken: generatedRefreshToken,
+      user: this.userToSafeReturnType(user),
+      isAuthenticated: true,
+    };
+  }
+
+  getAccessTokenFromRequest(request: Request): string {
+    let accessToken =
+      request.cookies.accessToken ??
+      request.body.accessToken ??
+      request.query.accessToken ??
+      request.headers.accessToken;
+
+    if (!accessToken) {
+      const authorizationHeader = request.headers.authorization;
+      if (!authorizationHeader) {
+        throw new UnauthorizedException("No access token found in request");
+      }
+
+      [, accessToken] = authorizationHeader.split(" ");
+    }
+
+    return accessToken;
+  }
+
+  getRefreshTokenFromRequest(request: Request): string {
+    const refreshToken =
+      request.cookies.refreshToken ??
+      request.body.refreshToken ??
+      request.query.refreshToken ??
+      request.headers.refreshToken;
+    if (!refreshToken) {
+      throw new UnauthorizedException("No refresh token found in request");
+    }
+
+    return refreshToken;
   }
 }

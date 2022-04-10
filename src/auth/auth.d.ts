@@ -1,12 +1,21 @@
 interface IJwtPayload {
   id: string;
   login: string;
+  authenticated: boolean;
 }
 
 interface IUserReturnType {
-  user: User;
+  user: IUserSafe;
   refreshToken: string;
   accessToken: string;
+  isAuthenticated: boolean;
+}
+
+interface IUserSafe {
+  id: string;
+  login: string;
+  email: string;
+  isTwoFaEnabled: boolean;
 }
 
 interface ISuccessReturnType {
@@ -15,6 +24,7 @@ interface ISuccessReturnType {
 
 interface ITwoFactorAuthInfo {
   isEnabled: boolean;
+  secret?: string;
   uri?: string;
   recoveryCode?: string;
   qrCodeEncodedString?: string;
@@ -23,6 +33,7 @@ interface ITwoFactorAuthInfo {
 export type {
   IJwtPayload,
   IUserReturnType,
+  IUserSafe,
   ISuccessReturnType,
   ITwoFactorAuthInfo,
 };

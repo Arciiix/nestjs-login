@@ -1,10 +1,9 @@
 import { PassportStrategy } from "@nestjs/passport";
 import { Injectable, UnauthorizedException } from "@nestjs/common";
 import { AuthService } from "../auth.service";
-import { User } from "@prisma/client";
 import { ExtractJwt, Strategy } from "passport-jwt";
 import { ConfigService } from "@nestjs/config";
-import { IJwtPayload } from "../auth";
+import { IJwtPayload, IUserSafe } from "../auth";
 
 @Injectable()
 export class LocalStrategy extends PassportStrategy(Strategy, "local") {
@@ -25,10 +24,14 @@ export class LocalStrategy extends PassportStrategy(Strategy, "local") {
     });
   }
 
-  async validate(jwtPayload: IJwtPayload): Promise<User> {
+  async validate(jwtPayload: IJwtPayload): Promise<IUserSafe> {
     const user = await this.authService.validateUser(jwtPayload);
     if (!user) {
       throw new UnauthorizedException();
+    }
+
+    if (!jwtPayload.authenticated) {
+      throw new UnauthorizedException("User is not authenticated (2FA)");
     }
 
     return user;

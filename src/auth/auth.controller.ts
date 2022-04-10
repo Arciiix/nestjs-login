@@ -3,7 +3,6 @@ import {
   Controller,
   Delete,
   Get,
-  Param,
   Post,
   UseGuards,
   Request,
@@ -12,7 +11,6 @@ import {
   Put,
   BadRequestException,
 } from "@nestjs/common";
-import { User } from "@prisma/client";
 import { AuthService } from "./auth.service";
 import {
   ISuccessReturnType,
@@ -31,11 +29,7 @@ export class AuthController {
   async login(
     @Response({ passthrough: true }) res,
     @Body() payload: UserLoginDto
-  ): Promise<{
-    user: User;
-    refreshToken: string;
-    accessToken: string;
-  }> {
+  ): Promise<IUserReturnType> {
     const returnObj = await this.authService.login(payload);
     res.cookie("accessToken", returnObj.accessToken, {
       httpOnly: true,
@@ -74,7 +68,7 @@ export class AuthController {
   ): Promise<ISuccessReturnType> {
     await this.authService.logout(
       req.user.id,
-      req.body.refreshToken ?? req.cookies.refreshToken
+      this.authService.getRefreshTokenFromRequest(req)
     );
     res.clearCookie("accessToken");
     res.clearCookie("refreshToken");
@@ -97,21 +91,26 @@ export class AuthController {
     return { success: true, amountOfDevices };
   }
 
-  @Get("/generateAccessToken/:refreshToken")
+  @Get("/generateAccessToken")
   async generateAccessToken(
-    @Response({ passthrough: true }) res,
-    @Param("refreshToken") refreshToken: string
-  ): Promise<{ accessToken: string }> {
+    @Request() req,
+    @Response({ passthrough: true }) res
+  ): Promise<{ accessToken: string; isAuthenticated: boolean }> {
+    const refreshToken = this.authService.getRefreshTokenFromRequest(req);
+
+    const isAuthenticated =
+      await this.authService.checkIfRefreshTokenIsAuthenticated(refreshToken);
     const accessToken = await this.authService.generateAccessToken(
-      refreshToken
+      refreshToken,
+      isAuthenticated
     );
     res.cookie("accessToken", accessToken, {
       httpOnly: true,
       maxAge: 1000 * 60 * 15,
     });
-
     return {
       accessToken: accessToken,
+      isAuthenticated: isAuthenticated,
     };
   }
 
@@ -145,5 +144,30 @@ export class AuthController {
       throw new BadRequestException("isEnabled is required");
     }
     return await this.authService.toogle2FA(req.user.id, isEnabled);
+  }
+
+  @Get("/2fa/login")
+  async loginWith2FA(
+    @Request() req,
+    @Response({ passthrough: true }) res,
+    @Body("code") code?: string,
+    @Body("recoveryCode") recoveryCode?: string
+  ): Promise<IUserReturnType> {
+    const accessToken = this.authService.getAccessTokenFromRequest(req);
+
+    const returnObj: IUserReturnType = await this.authService.loginWith2FA(
+      accessToken,
+      code,
+      recoveryCode
+    );
+    res.cookie("accessToken", returnObj.accessToken, {
+      httpOnly: true,
+      maxAge: 1000 * 60 * 15,
+    });
+    res.cookie("refreshToken", returnObj.refreshToken, {
+      httpOnly: true,
+      maxAge: 1000 * 60 * 60 * 24 * 30,
+    });
+    return returnObj;
   }
 }
