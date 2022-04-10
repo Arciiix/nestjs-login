@@ -8,9 +8,17 @@ import {
   UseGuards,
   Request,
   Response,
+  HttpCode,
+  Put,
+  BadRequestException,
 } from "@nestjs/common";
 import { User } from "@prisma/client";
 import { AuthService } from "./auth.service";
+import {
+  ISuccessReturnType,
+  ITwoFactorAuthInfo,
+  IUserReturnType,
+} from "./auth";
 import { UserDto } from "./dto/user.dto";
 import { UserLoginDto } from "./dto/userLogin.dto";
 import { LocalAuthGuard } from "./guards/localAuth.guard";
@@ -44,7 +52,7 @@ export class AuthController {
   async addUser(
     @Response({ passthrough: true }) res,
     @Body() user: UserDto
-  ): Promise<{ user: User; refreshToken: string; accessToken: string }> {
+  ): Promise<IUserReturnType> {
     const returnObj = await this.authService.addUser(user);
     res.cookie("accessToken", returnObj.accessToken, {
       httpOnly: true,
@@ -63,7 +71,7 @@ export class AuthController {
   async logout(
     @Request() req,
     @Response({ passthrough: true }) res
-  ): Promise<{ success: boolean }> {
+  ): Promise<ISuccessReturnType> {
     await this.authService.logout(
       req.user.id,
       req.body.refreshToken ?? req.cookies.refreshToken
@@ -79,7 +87,7 @@ export class AuthController {
   async logoutFromAllDevices(
     @Request() req,
     @Response({ passthrough: true }) res
-  ): Promise<{ success: boolean; amountOfDevices: number }> {
+  ): Promise<ISuccessReturnType & { amountOfDevices: number }> {
     const { amountOfDevices } = await this.authService.logoutFromAllDevices(
       req.user.id
     );
@@ -111,5 +119,31 @@ export class AuthController {
   @Get("/me")
   async getMe(@Request() req): Promise<any> {
     return req.user;
+  }
+
+  @UseGuards(LocalAuthGuard)
+  @Post("/2fa/generate")
+  @HttpCode(200)
+  async generate2FA(@Request() req): Promise<ITwoFactorAuthInfo> {
+    return await this.authService.generate2FA(req.user.id);
+  }
+
+  @UseGuards(LocalAuthGuard)
+  @Get("/2fa/info")
+  async get2FARecoveryCode(@Request() req): Promise<ITwoFactorAuthInfo> {
+    return await this.authService.get2FAInfo(req.user.id);
+  }
+
+  @UseGuards(LocalAuthGuard)
+  @Put("/2fa/toogle")
+  @HttpCode(200)
+  async toogle2FA(
+    @Request() req,
+    @Body("isEnabled") isEnabled: boolean
+  ): Promise<ITwoFactorAuthInfo> {
+    if (isEnabled === undefined || isEnabled === null) {
+      throw new BadRequestException("isEnabled is required");
+    }
+    return await this.authService.toogle2FA(req.user.id, isEnabled);
   }
 }

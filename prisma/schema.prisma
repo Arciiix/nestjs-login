@@ -13,6 +13,10 @@ model User {
   login         String         @unique
   password      String?
   refreshTokens RefreshToken[]
+
+  isTwoFaEnabled    Boolean? @default(false)
+  twoFaSecret       String?
+  twoFaRecoveryCode String?
 }
 
 model RefreshToken {

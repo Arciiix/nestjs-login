@@ -1,9 +1,10 @@
 import { PassportStrategy } from "@nestjs/passport";
 import { Injectable, UnauthorizedException } from "@nestjs/common";
-import { AuthService, JwtPayload } from "../auth.service";
+import { AuthService } from "../auth.service";
 import { User } from "@prisma/client";
 import { ExtractJwt, Strategy } from "passport-jwt";
 import { ConfigService } from "@nestjs/config";
+import { IJwtPayload } from "../auth";
 
 @Injectable()
 export class LocalStrategy extends PassportStrategy(Strategy, "local") {
@@ -24,7 +25,7 @@ export class LocalStrategy extends PassportStrategy(Strategy, "local") {
     });
   }
 
-  async validate(jwtPayload: JwtPayload): Promise<User> {
+  async validate(jwtPayload: IJwtPayload): Promise<User> {
     const user = await this.authService.validateUser(jwtPayload);
     if (!user) {
       throw new UnauthorizedException();

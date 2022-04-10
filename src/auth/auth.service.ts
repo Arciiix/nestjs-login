@@ -11,9 +11,13 @@ import { JwtService } from "@nestjs/jwt";
 import { User } from "@prisma/client";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime";
 import * as argon from "argon2";
+import { authenticator } from "otplib";
 import { PrismaService } from "src/prisma/prisma.service";
 import { UserDto } from "./dto/user.dto";
 import { UserLoginDto } from "./dto/userLogin.dto";
+import * as crypto from "crypto";
+import * as QRCode from "qrcode";
+import { IJwtPayload, ITwoFactorAuthInfo, IUserReturnType } from "./auth";
 
 @Injectable()
 export class AuthService {
@@ -23,11 +27,7 @@ export class AuthService {
     private config: ConfigService
   ) {}
 
-  async login(payload: UserLoginDto): Promise<{
-    user: User;
-    refreshToken: string;
-    accessToken: string;
-  }> {
+  async login(payload: UserLoginDto): Promise<IUserReturnType> {
     const user = await this.prisma.user.findFirst({
       where: {
         OR: [
@@ -54,18 +54,18 @@ export class AuthService {
     const refreshToken = await this.generateRefreshToken(user);
     const accessToken = await this.generateAccessToken(refreshToken);
 
-    user.password = null; //Don't send the password hash back to user
-
     return {
-      user,
+      user: {
+        id: user.id,
+        email: user.email,
+        login: user.login,
+      },
       refreshToken,
       accessToken,
     };
   }
 
-  async addUser(
-    user: UserDto
-  ): Promise<{ user: User; refreshToken: string; accessToken: string }> {
+  async addUser(user: UserDto): Promise<IUserReturnType> {
     try {
       const hash = await argon.hash(user.password);
 
@@ -135,7 +135,7 @@ export class AuthService {
         throw new UnauthorizedException("Invalid refresh token");
       }
 
-      const payload: JwtPayload = {
+      const payload: IJwtPayload = {
         id: refreshTokenPayload.id,
         login: refreshTokenPayload.login,
       };
@@ -160,12 +160,22 @@ export class AuthService {
       numberOfTokens >=
       (parseInt(this.config.get("MAX_REFRESH_TOKENS_PER_USER")) || 20)
     ) {
-      throw new ConflictException(
-        "User has too many refresh tokens - log out from all the devices first"
+      const firstSession = await this.prisma.refreshToken.findFirst({
+        where: {
+          userId: user.id,
+        },
+      });
+      await this.prisma.refreshToken.delete({
+        where: {
+          hashedToken: firstSession.hashedToken,
+        },
+      });
+      console.log(
+        `User ${user.id} has exceeded the total allowed amount of refresh tokens - deleting the first one!`
       );
     }
 
-    const payload: JwtPayload = {
+    const payload: IJwtPayload = {
       id: user.id,
       login: user.login,
     };
@@ -242,7 +252,7 @@ export class AuthService {
     return { amountOfDevices: count };
   }
 
-  async validateUser(jwtPayload: JwtPayload): Promise<User> {
+  async validateUser(jwtPayload: IJwtPayload): Promise<User> {
     const userObj = await this.prisma.user.findFirst({
       where: {
         id: jwtPayload.id,
@@ -253,11 +263,120 @@ export class AuthService {
 
     return userObj;
   }
-}
 
-interface JwtPayload {
-  id: string;
-  login: string;
-}
+  async generate2FA(userId: string): Promise<ITwoFactorAuthInfo> {
+    const user = await this.prisma.user.findFirst({
+      where: {
+        id: userId,
+      },
+    });
 
-export type { JwtPayload };
+    if (!user) {
+      throw new NotFoundException("User not found");
+    }
+
+    const secret = await authenticator.generateSecret();
+    const uri = await authenticator.keyuri(
+      user.login,
+      this.config.get("APP_NAME") ?? "NestJS-Login",
+      secret
+    );
+
+    const recoveryCode = crypto.randomBytes(16).toString("hex");
+    const qrCodeEncodedString = await QRCode.toDataURL(uri);
+
+    await this.prisma.user.update({
+      where: {
+        id: userId,
+      },
+      data: {
+        isTwoFaEnabled: true,
+        twoFaSecret: secret,
+        twoFaRecoveryCode: recoveryCode,
+      },
+    });
+
+    return {
+      isEnabled: true,
+      uri,
+      recoveryCode,
+      qrCodeEncodedString,
+    };
+  }
+
+  async get2FAInfo(userId: string): Promise<ITwoFactorAuthInfo> {
+    const user = await this.prisma.user.findFirst({
+      where: {
+        id: userId,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException("User not found");
+    }
+    let uri, qrCodeEncodedString;
+    if (user.isTwoFaEnabled) {
+      uri = await authenticator.keyuri(
+        user.login,
+        this.config.get("APP_NAME") ?? "NestJS-Login",
+        user.twoFaSecret
+      );
+      qrCodeEncodedString = await QRCode.toDataURL(uri);
+    }
+
+    return {
+      isEnabled: user.isTwoFaEnabled,
+      uri: uri,
+      recoveryCode: user.twoFaRecoveryCode,
+      qrCodeEncodedString: qrCodeEncodedString,
+    };
+  }
+
+  async toogle2FA(
+    userId: string,
+    isEnabled: boolean
+  ): Promise<ITwoFactorAuthInfo> {
+    const user = await this.prisma.user.findFirst({
+      where: {
+        id: userId,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException("User not found");
+    }
+
+    if (isEnabled) {
+      if (user.isTwoFaEnabled) {
+        throw new BadRequestException("2FA is already enabled");
+      }
+      if (user.twoFaSecret) {
+        await this.prisma.user.update({
+          where: {
+            id: userId,
+          },
+          data: {
+            isTwoFaEnabled: true,
+          },
+        });
+        return await this.get2FAInfo(userId);
+      } else {
+        return await this.generate2FA(userId);
+      }
+    } else {
+      if (!user.isTwoFaEnabled) {
+        throw new BadRequestException("2FA is already disabled");
+      }
+      await this.prisma.user.update({
+        where: {
+          id: userId,
+        },
+        data: {
+          isTwoFaEnabled: false,
+        },
+      });
+
+      return { isEnabled: false };
+    }
+  }
+}
